@@ -41,7 +41,7 @@ under the License.
 	<licenses>
 		<license>
 			<name>The Apache License, Version 2.0</name>
-			<url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+			<url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
 		</license>
 	</licenses>
 
@@ -519,6 +519,7 @@ under the License.
                                 <exclude>**/*.flux</exclude>
                                 <exclude>**/*.txt</exclude>
                                 <exclude>**/*.rss</exclude>
+                                <exclude>**/*.pdf</exclude>
                                 <exclude>**/*.tar.gz</exclude>
                                 <exclude>**/README.md</exclude>
                                 <exclude>**/target/**</exclude>
@@ -692,6 +693,7 @@ under the License.
 		<module>archetype</module>
 		<module>external/opensearch/archetype</module>
 		<module>external/solr/archetype</module>
-    </modules>
+		<module>docs</module>
+	</modules>
 
 </project>
