@@ -173,9 +173,7 @@ public class SolrConnection {
      * leader goes down before handling it.
      */
     private void flushUpdates(
-        Replica leader,
-        List<Update> waitingUpdates,
-        CloudSolrClient cloudClient) {
+            Replica leader, List<Update> waitingUpdates, CloudSolrClient cloudClient) {
 
         List<String> deletionIds = new ArrayList<>();
         List<SolrInputDocument> docs = new ArrayList<>();
@@ -200,16 +198,16 @@ public class SolrConnection {
         waitingUpdates.clear();
 
         CompletableFuture.runAsync(
-                        () -> {
-                            try {
-                                cloudClient.request(updateRequest, collection);
-                            } catch (Exception e) {
-                                LOG.error("Exception caught while updating", e);
-                                synchronized (lock) {
-                                    waitingUpdates.addAll(batch);
-                                }
-                            }
-                        });
+                () -> {
+                    try {
+                        cloudClient.request(updateRequest, collection);
+                    } catch (Exception e) {
+                        LOG.error("Exception caught while updating", e);
+                        synchronized (lock) {
+                            waitingUpdates.addAll(batch);
+                        }
+                    }
+                });
     }
 
     private Slice getSlice(SolrInputDocument doc, DocCollection col) {
@@ -243,24 +241,26 @@ public class SolrConnection {
     public CompletableFuture<QueryResponse> requestAsync(QueryRequest request) {
         if (cloud) {
             CloudSolrClient cloudClient = (CloudSolrClient) client;
-            return CompletableFuture.supplyAsync(() -> {
-                try {
-                    var resp = cloudClient.request(request, collection);
-                    QueryResponse qr = new QueryResponse();
-                    qr.setResponse(resp);
-                    return qr;
-                } catch (Exception e) {
-                    throw new java.util.concurrent.CompletionException(e);
-                }
-            });
+            return CompletableFuture.supplyAsync(
+                    () -> {
+                        try {
+                            var resp = cloudClient.request(request, collection);
+                            QueryResponse qr = new QueryResponse();
+                            qr.setResponse(resp);
+                            return qr;
+                        } catch (Exception e) {
+                            throw new java.util.concurrent.CompletionException(e);
+                        }
+                    });
         } else {
             return ((HttpJettySolrClient) client)
-                .requestAsync(request)
-                .thenApply(resp -> {
-                    QueryResponse qr = new QueryResponse();
-                    qr.setResponse(resp);
-                    return qr;
-                });
+                    .requestAsync(request)
+                    .thenApply(
+                            resp -> {
+                                QueryResponse qr = new QueryResponse();
+                                qr.setResponse(resp);
+                                return qr;
+                            });
         }
     }
 
@@ -329,12 +329,12 @@ public class SolrConnection {
             HttpJettySolrClient httpJettySolrClient = httpBuilder.build();
 
             ConcurrentUpdateJettySolrClient concurrentUpdateJettySolrClient =
-                (ConcurrentUpdateJettySolrClient)
-                    new ConcurrentUpdateJettySolrClient.Builder(
-                                rootUrl, httpJettySolrClient, true)
-                            .withDefaultCollection(defaultColl)
-                            .withQueueSize(queueSize)
-                            .build();
+                    (ConcurrentUpdateJettySolrClient)
+                            new ConcurrentUpdateJettySolrClient.Builder(
+                                            rootUrl, httpJettySolrClient, true)
+                                    .withDefaultCollection(defaultColl)
+                                    .withQueueSize(queueSize)
+                                    .build();
 
             return new SolrConnection(
                     httpJettySolrClient,
