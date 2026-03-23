@@ -30,7 +30,10 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.SolrServerException;
+import org.apache.solr.client.solrj.impl.CloudHttp2SolrClient;
 import org.apache.solr.client.solrj.impl.CloudSolrClient;
+import org.apache.solr.client.solrj.impl.LBAsyncSolrClient;
+import org.apache.solr.client.solrj.impl.LBSolrClient;
 import org.apache.solr.client.solrj.jetty.ConcurrentUpdateJettySolrClient;
 import org.apache.solr.client.solrj.jetty.HttpJettySolrClient;
 import org.apache.solr.client.solrj.request.QueryRequest;
@@ -106,7 +109,11 @@ public class SolrConnection {
             }
 
             CloudSolrClient cloudClient = (CloudSolrClient) client;
-            DocCollection col = cloudClient.getClusterState().getCollection(collection);
+            DocCollection col =
+                    cloudClient
+                            .getClusterStateProvider()
+                            .getClusterState()
+                            .getCollection(collection);
 
             // Flush all slices
             for (var entry : updateQueues.entrySet()) {
@@ -133,7 +140,11 @@ public class SolrConnection {
             lastUpdate = System.currentTimeMillis();
 
             CloudSolrClient cloudClient = (CloudSolrClient) client;
-            DocCollection col = cloudClient.getClusterState().getCollection(collection);
+            DocCollection col =
+                    cloudClient
+                            .getClusterStateProvider()
+                            .getClusterState()
+                            .getCollection(collection);
 
             // Find slice for this update
             Slice slice = null;
@@ -186,6 +197,10 @@ public class SolrConnection {
             }
         }
 
+        if (docs.isEmpty() && deletionIds.isEmpty()) {
+            return;
+        }
+
         UpdateRequest updateRequest = new UpdateRequest();
         if (!docs.isEmpty()) {
             updateRequest.add(docs);
@@ -197,17 +212,32 @@ public class SolrConnection {
         List<Update> batch = new ArrayList<>(waitingUpdates);
         waitingUpdates.clear();
 
-        CompletableFuture.runAsync(
-                () -> {
-                    try {
-                        cloudClient.request(updateRequest, collection);
-                    } catch (Exception e) {
-                        LOG.error("Exception caught while updating", e);
-                        synchronized (lock) {
-                            waitingUpdates.addAll(batch);
-                        }
-                    }
-                });
+        // Building the endpoint for the current leader
+        LBSolrClient.Endpoint endpoint =
+                new LBSolrClient.Endpoint(leader.getBaseUrl(), leader.getCoreName());
+        List<LBSolrClient.Endpoint> endpoints = Collections.singletonList(endpoint);
+        LBSolrClient.Req req = new LBSolrClient.Req(updateRequest, endpoints);
+
+        /*
+         * Retrieve the async LB client from the CloudSolrClient.
+         * NOTE: This relies on the current internal implementation of CloudSolrClient.Builder,
+         * which returns a CloudHttp2SolrClient.getLbClient() is protected there and is
+         * not part of the public SolrJ 10 API surface, so this may require adjustments in future Solr versions.
+         */
+        LBAsyncSolrClient lbAsyncSolrClient =
+                (LBAsyncSolrClient) ((CloudHttp2SolrClient) cloudClient).getLbClient();
+
+        lbAsyncSolrClient
+                .requestAsync(req)
+                .whenComplete(
+                        (response, throwable) -> {
+                            if (throwable != null) {
+                                LOG.error("Exception caught while updating", throwable);
+                                synchronized (lock) {
+                                    waitingUpdates.addAll(batch);
+                                }
+                            }
+                        });
     }
 
     private Slice getSlice(SolrInputDocument doc, DocCollection col) {
@@ -288,9 +318,11 @@ public class SolrConnection {
         boolean statusCollection = boltType.equals("status");
 
         if (StringUtils.isNotBlank(zkHost)) {
+            HttpJettySolrClient jettyClient = new HttpJettySolrClient.Builder().build();
+
             CloudSolrClient.Builder builder =
-                    new CloudSolrClient.Builder(
-                            Collections.singletonList(zkHost), Optional.empty());
+                    new CloudSolrClient.Builder(Collections.singletonList(zkHost), Optional.empty())
+                            .withHttpClient(jettyClient);
 
             if (StringUtils.isNotBlank(collection)) {
                 builder.withDefaultCollection(collection);
