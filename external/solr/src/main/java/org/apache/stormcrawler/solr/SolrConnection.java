@@ -215,14 +215,18 @@ public class SolrConnection {
         // Building the endpoint for the current leader
         LBSolrClient.Endpoint endpoint =
                 new LBSolrClient.Endpoint(leader.getBaseUrl(), leader.getCoreName());
-        List<LBSolrClient.Endpoint> endpoints = Collections.singletonList(endpoint);
+        List<LBSolrClient.Endpoint> endpoints = new ArrayList<>();
+        endpoints.add(endpoint);
+
+        // Shuffle the endpoints for basic load balancing
+        Collections.shuffle(endpoints);
+
         LBSolrClient.Req req = new LBSolrClient.Req(updateRequest, endpoints);
 
         /*
          * Retrieve the async LB client from the CloudSolrClient.
-         * NOTE: This relies on the current internal implementation of CloudSolrClient.Builder,
-         * which returns a CloudHttp2SolrClient.getLbClient() is protected there and is
-         * not part of the public SolrJ 10 API surface, so this may require adjustments in future Solr versions.
+         * NOTE: CloudSolrClient wraps CloudHttp2SolrClient in Solr 10
+         * see Major Changes: https://solr.apache.org/guide/solr/latest/upgrade-notes/major-changes-in-solr-10.html#solrj
          */
         LBAsyncSolrClient lbAsyncSolrClient =
                 (LBAsyncSolrClient) ((CloudHttp2SolrClient) cloudClient).getLbClient();
@@ -233,6 +237,7 @@ public class SolrConnection {
                         (response, throwable) -> {
                             if (throwable != null) {
                                 LOG.error("Exception caught while updating", throwable);
+                                // The request failed => add the batch back to the pending updates
                                 synchronized (lock) {
                                     waitingUpdates.addAll(batch);
                                 }
@@ -271,17 +276,55 @@ public class SolrConnection {
     public CompletableFuture<QueryResponse> requestAsync(QueryRequest request) {
         if (cloud) {
             CloudSolrClient cloudClient = (CloudSolrClient) client;
-            return CompletableFuture.supplyAsync(
-                    () -> {
-                        try {
-                            var resp = cloudClient.request(request, collection);
-                            QueryResponse qr = new QueryResponse();
-                            qr.setResponse(resp);
-                            return qr;
-                        } catch (Exception e) {
-                            throw new java.util.concurrent.CompletionException(e);
-                        }
-                    });
+
+            // Find the shard to route the request to
+            String shardId = request.getParams().get("shards");
+            if (shardId == null) {
+                shardId = "shard1";
+            }
+
+            DocCollection col =
+                    cloudClient
+                            .getClusterStateProvider()
+                            .getClusterState()
+                            .getCollection(collection);
+            Slice slice = col.getSlice(shardId);
+
+            if (slice == null) {
+                return CompletableFuture.failedFuture(
+                        new RuntimeException("Could not find shard " + shardId));
+            }
+
+            // Will get results from the first successful replica of this shard
+            List<LBSolrClient.Endpoint> endpoints = new ArrayList<>();
+
+            for (Replica replica : slice.getReplicas()) {
+                if (replica.getState() == Replica.State.ACTIVE) {
+                    endpoints.add(
+                            new LBSolrClient.Endpoint(replica.getBaseUrl(), replica.getCoreName()));
+                }
+            }
+
+            // Shuffle the endpoints for basic load balancing
+            Collections.shuffle(endpoints);
+
+            /*
+             * Retrieve the async LB client from the CloudSolrClient.
+             * NOTE: CloudSolrClient wraps CloudHttp2SolrClient in Solr 10
+             * see Major Changes: https://solr.apache.org/guide/solr/latest/upgrade-notes/major-changes-in-solr-10.html#solrj
+             */
+            LBAsyncSolrClient lbAsyncSolrClient =
+                    (LBAsyncSolrClient) ((CloudHttp2SolrClient) cloudClient).getLbClient();
+            LBSolrClient.Req req = new LBSolrClient.Req(request, endpoints);
+
+            return lbAsyncSolrClient
+                    .requestAsync(req)
+                    .thenApply(
+                            rsp -> {
+                                QueryResponse qr = new QueryResponse();
+                                qr.setResponse(rsp.getResponse());
+                                return qr;
+                            });
         } else {
             return ((HttpJettySolrClient) client)
                     .requestAsync(request)
