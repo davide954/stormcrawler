@@ -301,7 +301,7 @@ public class AggregationSpout extends AbstractSpout implements ActionListener<Se
                 alreadyprocessed,
                 ((float) timeTaken / numhits));
 
-        queryTimes.addMeasurement(timeTaken);
+        queryTimes.accept(timeTaken);
         eventCounter.scope("already_being_processed").incrBy(alreadyprocessed);
         eventCounter.scope("OpenSearch_queries").incrBy(1);
         eventCounter.scope("OpenSearch_docs").incrBy(numhits);
